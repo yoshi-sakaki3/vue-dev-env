@@ -1,0 +1,87 @@
+# Vue 開発環境（Gold LINK DX）
+# 使い方は README.md を参照。普段は .\dev.ps1 up / down で操作する。
+#
+#   web      … Vue の画面（Vite。/api は app に転送）          http://localhost:5175
+#   app      … API（Node.js + Hono）                          http://localhost:3300
+#   db       … PostgreSQL 17（開発用 app・テスト用 app_test） localhost:5438
+#   mailpit  … 送信メールを受け止めて表示する                 http://localhost:8031
+#
+# ポートはすべて 127.0.0.1 に限定（同じネットワークの他の PC からは見えない）
+
+name: gldx-vue
+
+services:
+  app:
+    build:
+      context: ./docker/node
+      args:
+        NODE_VERSION: ${NODE_VERSION:-24}
+    working_dir: /app
+    command: ["pnpm", "dev"]
+    ports:
+      - "127.0.0.1:${APP_PORT:-3300}:3000"
+    volumes:
+      - ./app:/app
+      # node_modules はコンテナ側に置く（Windows のフォルダに置くと遅く、壊れやすいため）
+      - node-modules:/app/node_modules
+      - pnpm-store:/pnpm/store
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-app}:${DB_PASSWORD:-app}@db:5432/${DB_NAME:-app}
+      TEST_DATABASE_URL: postgres://${DB_USER:-app}:${DB_PASSWORD:-app}@db:5432/app_test
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      TZ: Asia/Tokyo
+      # Windows のフォルダを監視するときに必要（ファイル変更の検知）
+      CHOKIDAR_USEPOLLING: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./docker/node
+      args:
+        NODE_VERSION: ${NODE_VERSION:-24}
+    working_dir: /web
+    command: ["pnpm", "dev"]
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5175}:5175"
+    volumes:
+      - ./web:/web
+      - web-node-modules:/web/node_modules
+      - pnpm-store:/pnpm/store
+    environment:
+      # 画面からの /api/... を、app コンテナの API に転送する（vite.config.ts で使う）
+      API_TARGET: http://app:3000
+      TZ: Asia/Tokyo
+    depends_on:
+      - app
+
+  db:
+    image: postgres:17-alpine
+    ports:
+      - "127.0.0.1:${DB_PORT:-5438}:5432"
+    environment:
+      POSTGRES_USER: ${DB_USER:-app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-app}
+      POSTGRES_DB: ${DB_NAME:-app}
+      TZ: Asia/Tokyo
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-app} -d ${DB_NAME:-app}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8031}:8025"
+
+volumes:
+  node-modules:
+  web-node-modules:
+  pnpm-store:
+  db-data:
